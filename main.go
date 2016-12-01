@@ -46,7 +46,7 @@ func main() {
 		PullCommand,
 		// UpdateCommand,
 		// TestCommand,
-		// ExecCommand,
+		ExecCommand,
 	}
 
 	if err := app.Run(os.Args); err != nil {
@@ -64,29 +64,15 @@ var PullCommand = cli.Command{
 			return err
 		}
 
-		var cfg gx.Config
-		pm, err := gx.NewPM(&cfg)
-		if err != nil {
-			return err
-		}
-
-		// TODO: this is pretty inefficient, we're loading each package twice
-		deps, err := pm.EnumerateDependencies(&pkg)
+		deps, err := EnumerateDependencies(&pkg)
 		if err != nil {
 			return err
 		}
 
 		Log("pulling %d package repositories...", len(deps))
 
-		for h, _ := range deps {
-			var dpkg gx.Package
-			if err = gx.LoadPackage(&dpkg, pkg.Language, h); err != nil {
-				return err
-			}
-
-			pkggx := make(map[string]interface{})
-			err = json.Unmarshal(dpkg.Gx, &pkggx)
-			dvcsimport, _ := pkggx["dvcsimport"].(string)
+		for h, dpkg := range deps {
+			dvcsimport := GxDvcsImport(dpkg)
 			if dvcsimport == "" {
 				return fmt.Errorf("package %s @ %s doesn't have gx.dvcsimport set", dpkg.Name, h)
 			}
@@ -114,4 +100,97 @@ var PullCommand = cli.Command{
 
 		return nil
 	},
+}
+
+var ExecCommand = cli.Command{
+	Name:  "exec",
+	Usage: "executes the given command in each dependency repo",
+	Action: func(c *cli.Context) error {
+		if len(c.Args()) == 0 {
+			return fmt.Errorf("exec requires a command to run")
+		}
+		cmd := c.Args().First()
+
+		var pkg gx.Package
+		err := gx.LoadPackageFile(&pkg, gx.PkgFileName)
+		if err != nil {
+			return err
+		}
+
+		deps, err := EnumerateDependencies(&pkg)
+		if err != nil {
+			return err
+		}
+
+		Log("executing in %d package repositories...", len(deps))
+
+		for _, dpkg := range deps {
+			dir, err := PkgDir(dpkg)
+			if err != nil {
+				return err
+			}
+
+			VLog("sh -c '%s'", cmd)
+			cmd := exec.Command("sh", "-c", cmd)
+			cmd.Dir = dir
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err = cmd.Run(); err != nil {
+				return err
+			}
+		}
+
+		Log("done.")
+
+		return nil
+	},
+}
+
+func GxDvcsImport(pkg *gx.Package) string {
+	pkggx := make(map[string]interface{})
+	_ = json.Unmarshal(pkg.Gx, &pkggx)
+	return pkggx["dvcsimport"].(string)
+}
+
+func PkgDir(pkg *gx.Package) (string, error) {
+	dir, err := gx.InstallPath(pkg.Language, "", true)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, GxDvcsImport(pkg)), nil
+}
+
+func EnumerateDependencies(pkg *gx.Package) (map[string]*gx.Package, error) {
+	deps := make(map[string]*gx.Package)
+	err := enumerateDepsRec(pkg, deps)
+	if err != nil {
+		return nil, err
+	}
+
+	return deps, nil
+}
+
+func enumerateDepsRec(pkg *gx.Package, deps map[string]*gx.Package) error {
+	for _, d := range pkg.Dependencies {
+		if _, ok := deps[d.Hash]; ok {
+			continue
+		}
+
+		var dpkg gx.Package
+		err := gx.LoadPackage(&dpkg, pkg.Language, d.Hash)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("package %s @ %s not found", d.Name, d.Hash)
+			}
+			return err
+		}
+
+		deps[d.Hash] = &dpkg
+
+		err = enumerateDepsRec(&dpkg, deps)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
