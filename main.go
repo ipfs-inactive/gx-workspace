@@ -80,19 +80,21 @@ var PullCommand = cli.Command{
 			// TODO: these won't go-get
 			//       can't load package: package github.com/gogo/protobuf: no buildable Go source files
 			if strings.HasPrefix(dvcsimport, "golang.org/x/") {
+				Log("warning: skipping %s (no buildable source files)", dvcsimport)
 				continue
 			}
 			if dvcsimport == "github.com/gogo/protobuf" {
+				Log("warning: skipping %s (no buildable source files)", dvcsimport)
 				continue
 			}
 
 			// TODO: add option for passing -u, -v
-			VLog("go get -d %s", dvcsimport)
+			VLog("> go get -d %s", dvcsimport)
 			cmd := exec.Command("go", "get", "-d", dvcsimport)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err = cmd.Run(); err != nil {
-				return err
+				return fmt.Errorf("go get: %s", err)
 			}
 		}
 
@@ -130,7 +132,7 @@ var ExecCommand = cli.Command{
 				return err
 			}
 
-			VLog("sh -c '%s'", cmd)
+			VLog("> sh -c '%s'", cmd)
 			cmd := exec.Command("sh", "-c", cmd)
 			cmd.Dir = dir
 			cmd.Stdout = os.Stdout
