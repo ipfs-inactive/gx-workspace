@@ -29,7 +29,7 @@ Most of them will already be there and it's our "workspace".
 ```
 
 Now bubble up the hashes through the tree, this leaves dirty `package.json` and `.gx/`.
-This will abort if *any* repo is dirty, overridable by -f
+This will abort if *any* repo is already dirty, overridable by -f
 
 ```sh
 > gx-workspace update go-cid go-libp2p-interface-pnet
@@ -46,7 +46,7 @@ Now do the git dance, but only for repos which got touched
 ```sh
 > gx-workspace pr feat/gx-update-123456
 # which is the equivalent of:
-> gx-workspace exec --only-deps --changed 'git checkout -b $branch && git commit -am "gx release $VERSION" && git push origin $BRANCH && hub pull-request -m "Update go-cid go-libp2p-interface-pnet"'
+> gx-workspace exec --only-deps --changed 'git checkout -b $BRANCH && git commit -am "gx release $VERSION" && git push origin $BRANCH && hub pull-request -m "Update go-cid go-libp2p-interface-pnet"'
 ```
 
 There's going to be some packages that are outside of this dependency tree,
