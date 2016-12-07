@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,6 +43,7 @@ func main() {
 	cwd = lcwd
 
 	app.Commands = []cli.Command{
+		DirsCommand,
 		PullCommand,
 		UpdateCommand,
 		// TestCommand,
@@ -51,6 +53,48 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		Fatal(err)
 	}
+}
+
+var DirsCommand = cli.Command{
+	Name:  "dirs",
+	Usage: "prints the paths of package repositories",
+	Flags: []cli.Flag{
+		cli.BoolFlag{
+			Name:  "dirty,d",
+			Usage: "print only repositories with changes",
+		},
+	},
+	Action: func(c *cli.Context) error {
+		dirty := c.Bool("dirty")
+
+		var pkg gx.Package
+		err := gx.LoadPackageFile(&pkg, gx.PkgFileName)
+		if err != nil {
+			return err
+		}
+
+		pkgs, err := EnumerateDependencies(&pkg)
+		if err != nil {
+			return err
+		}
+
+		for _, pkg := range pkgs {
+			cmd := exec.Command("git", "status", "--porcelain")
+			cmd.Dir = pkg.Dir
+			var out bytes.Buffer
+			cmd.Stdout = &out
+			cmd.Stderr = os.Stderr
+			if err = cmd.Run(); err != nil {
+				Log("git status -s: %s", err)
+			}
+
+			if !dirty || (dirty && len(cmd.Stdout.(*bytes.Buffer).String()) > 0) {
+				fmt.Println(pkg.Dir)
+			}
+		}
+
+		return nil
+	},
 }
 
 var PullCommand = cli.Command{

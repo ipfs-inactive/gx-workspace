@@ -10,6 +10,7 @@ import (
 	gx "github.com/whyrusleeping/gx/gxutil"
 )
 
+// TODO: make sure all callers check for empty result
 func GxDvcsImport(pkg *gx.Package) string {
 	pkggx := make(map[string]interface{})
 	_ = json.Unmarshal(pkg.Gx, &pkggx)
@@ -21,7 +22,11 @@ func PkgDir(pkg *gx.Package) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, GxDvcsImport(pkg)), nil
+	imp := GxDvcsImport(pkg)
+	if imp == "" {
+		return "", fmt.Errorf("package %s doesn't have gx.dvcsimport set", pkg.Name)
+	}
+	return filepath.Join(dir, imp), nil
 }
 
 type pkgInWorkspace struct {
