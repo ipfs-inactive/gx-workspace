@@ -123,12 +123,12 @@ func updateVersion(pkg *gx.Package, nver string) (outerr error) {
 		return fmt.Errorf("must specify version with non-zero length")
 	}
 
-	// defer func() {
-	// 	err := gx.SavePackageFile(pkg, gx.PkgFileName)
-	// 	if err != nil {
-	// 		outerr = err
-	// 	}
-	// }()
+	defer func() {
+		err := gx.SavePackageFile(pkg, gx.PkgFileName)
+		if err != nil {
+			outerr = err
+		}
+	}()
 
 	// if argument is a semver, set version to it
 	_, err := semver.Make(nver)
@@ -181,10 +181,10 @@ func doPublish(pm *gx.PM, dir string, pkg *gx.Package) (string, error) {
 		return "", fmt.Errorf("publish %s: %s", dir, err)
 	}
 
-	// err = writeLastPub(dir, pkg.Version, hash)
-	// if err != nil {
-	// 	return "", err
-	// }
+	err = writeLastPub(dir, pkg.Version, hash)
+	if err != nil {
+		return "", err
+	}
 
 	err = gx.TryRunHook("post-publish", pkg.Language, pkg.SubtoolRequired, hash)
 	if err != nil {

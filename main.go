@@ -18,6 +18,8 @@ var pkg gx.Package
 var deps map[string]pkgInWorkspace
 
 // TODO: have a global gx-workspace working directory
+// TODO: check daemon up before starting update
+// TODO: optimize deps loading
 func main() {
 	app := cli.NewApp()
 	app.Name = "gx-workspace"
@@ -266,11 +268,11 @@ var UpdateCommand = cli.Command{
 					}
 				}
 				if changed {
-					// VLog("gx.SavePackageFile(%s)", GxDvcsImport(dp.Pkg))
-					// err = gx.SavePackageFile(dp.Pkg, filepath.Join(dp.Dir, gx.PkgFileName))
-					// if err != nil {
-					// 	return err
-					// }
+					VLog("gx.SavePackageFile(%s)", GxDvcsImport(dp.Pkg))
+					err = gx.SavePackageFile(dp.Pkg, filepath.Join(dp.Dir, gx.PkgFileName))
+					if err != nil {
+						return err
+					}
 				}
 			}
 
