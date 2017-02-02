@@ -44,6 +44,7 @@ func main() {
 
 	app.Commands = []cli.Command{
 		PullCommand,
+		BubbleListCommand,
 		// UpdateCommand,
 		// TestCommand,
 		ExecCommand,
@@ -52,6 +53,69 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		Fatal(err)
 	}
+}
+
+var BubbleListCommand = cli.Command{
+	Name:  "bubble-list",
+	Usage: "list all packages affected by an update of the named package",
+	Action: func(c *cli.Context) error {
+		var pkg gx.Package
+		err := gx.LoadPackageFile(&pkg, gx.PkgFileName)
+		if err != nil {
+			return err
+		}
+
+		if !c.Args().Present() {
+			return fmt.Errorf("must pass a package name")
+		}
+
+		upd := c.Args().First()
+
+		var touched []string
+		memo := make(map[string]bool)
+
+		var checkRec func(pkg *gx.Package) (bool, error)
+		checkRec = func(pkg *gx.Package) (bool, error) {
+			var needsUpd bool
+			pkg.ForEachDep(func(dep *gx.Dependency, pkg *gx.Package) error {
+				val, ok := memo[dep.Hash]
+				if dep.Name == upd {
+					needsUpd = true
+				} else {
+					if ok {
+						needsUpd = val || needsUpd
+					} else {
+						nu, err := checkRec(pkg)
+						if err != nil {
+							return err
+						}
+
+						memo[dep.Hash] = nu
+						needsUpd = nu || needsUpd
+					}
+				}
+				return nil
+			})
+			if needsUpd {
+				touched = append(touched, pkg.Name)
+			}
+			return needsUpd, nil
+		}
+
+		needs, err := checkRec(&pkg)
+		if err != nil {
+			return err
+		}
+
+		if !needs {
+			fmt.Println("named package not in dependency tree")
+		}
+
+		for _, p := range touched {
+			fmt.Println(p)
+		}
+		return nil
+	},
 }
 
 var PullCommand = cli.Command{
