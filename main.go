@@ -339,6 +339,11 @@ var updateNextCmd = cli.Command{
 			return err
 		}
 
+		err = checkPackage(dir)
+		if err != nil {
+			return err
+		}
+
 		ui.Todo = ui.Todo[1:]
 		ui.Current = dir
 		err = writeUpdateProgress(ui)
@@ -386,6 +391,12 @@ func lookupByDepName(pkg *gx.Package, name string) (string, error) {
 }
 
 func publishAndRelease(dir string) (string, string, error) {
+	uwcmd := exec.Command("gx-go", "uw")
+	uwcmd.Dir = dir
+	if err := uwcmd.Run(); err != nil {
+		return "", "", fmt.Errorf("error undoing dependency rewrite pre-publish: %s", err)
+	}
+
 	pfpath := filepath.Join(dir, gx.PkgFileName)
 	var pkg gx.Package
 	err := gx.LoadPackageFile(&pkg, pfpath)
@@ -433,6 +444,12 @@ func updatePackage(dir string, changes map[string]string) error {
 		return err
 	}
 
+	rwcmd := exec.Command("gx-go", "uw")
+	rwcmd.Dir = dir
+	if err := rwcmd.Run(); err != nil {
+		return fmt.Errorf("error undoing deps rewrite: %s", err)
+	}
+
 	var changed bool
 	for _, dep := range pkg.Dependencies {
 		val, ok := changes[dep.Name]
@@ -464,6 +481,10 @@ func updatePackage(dir string, changes map[string]string) error {
 		return err
 	}
 
+	return nil
+}
+
+func checkPackage(dir string) error {
 	dupecmd := exec.Command("gx", "deps", "dupes")
 	dupecmd.Dir = dir
 	out, err := dupecmd.Output()
@@ -473,12 +494,49 @@ func updatePackage(dir string, changes map[string]string) error {
 
 	lines := bytes.Split(out, []byte("\n"))
 	if len(lines) > 0 && len(lines[0]) > 0 {
-		fmt.Println("Package has duplicate dependencies after updating: ")
+		fmt.Println("!! Package has duplicate dependencies after updating: ")
 		for _, l := range lines {
 			fmt.Println(string(l))
 		}
 	}
 
+	if err := checkForMissingDeps(dir); err != nil {
+		return err
+	}
+
+	fmt.Println("> Running 'gx test'")
+	gxtest := exec.Command("gx", "test", "./...")
+	gxtest.Dir = dir
+	gxtest.Stdout = os.Stdout
+	gxtest.Stderr = os.Stderr
+	if err := gxtest.Run(); err != nil {
+		return fmt.Errorf("error running tests: %s", err)
+	}
+
+	return nil
+}
+
+func checkForMissingDeps(dir string) error {
+	rwcmd := exec.Command("gx-go", "rw")
+	rwcmd.Dir = dir
+	if err := rwcmd.Run(); err != nil {
+		return fmt.Errorf("error rewriting deps: %s", err)
+	}
+
+	ddcmd := exec.Command("gx-go", "dvcs-deps")
+	ddcmd.Dir = dir
+	out, err := ddcmd.Output()
+	if err != nil {
+		return fmt.Errorf("error while checking for dupe deps: %s", err)
+	}
+
+	lines := bytes.Split(out, []byte("\n"))
+	if len(lines) > 0 && len(lines[0]) > 0 {
+		fmt.Println("!! Package appears to have missing dependencies:")
+		for _, l := range lines {
+			fmt.Println(string(l))
+		}
+	}
 	return nil
 }
 
