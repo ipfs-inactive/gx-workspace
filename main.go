@@ -559,7 +559,7 @@ func gitPull(dir string) error {
 	}
 
 	if br != "master" {
-		return fmt.Errorf("%s not on branch master, please fix manually")
+		return fmt.Errorf("%s not on branch master, please fix manually", dir)
 	}
 
 	cmd := exec.Command("git", "pull", "origin", "master")
