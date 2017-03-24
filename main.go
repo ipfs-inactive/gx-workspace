@@ -426,6 +426,17 @@ func publishAndRelease(dir string) (string, string, error) {
 	impath := GxDvcsImport(&pkg)
 	fmt.Printf("cmd to pin: curl -X POST -F \"ghurl=%s\" http://mars.i.ipfs.team:9444/pin_package\n", impath)
 	nhash := strings.Fields(string(data))[1]
+
+	ipath, err := gx.InstallPath(pkg.Language, "", true)
+	if err != nil {
+		return "", "", err
+	}
+
+	_, err = pm.InstallPackage(nhash, ipath)
+	if err != nil {
+		return "", "", err
+	}
+
 	return pkg.Name, nhash, nil
 }
 
@@ -458,6 +469,12 @@ func updatePackage(dir string, changes map[string]string) error {
 			continue
 		}
 
+		var chpkg gx.Package
+		if err := gx.LoadPackage(&chpkg, pkg.Language, val); err != nil {
+			return err
+		}
+
+		dep.Version = chpkg.Version
 		dep.Hash = val
 		changed = true
 	}
