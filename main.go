@@ -190,6 +190,7 @@ var updateAddCmd = cli.Command{
 		}
 
 		ui.Changes[opkg.Name] = hash
+		fmt.Printf("Will update %s to %s (%s)\n", opkg.Name, hash, opkg.Version)
 		return writeUpdateProgress(ui)
 	},
 }
