@@ -263,6 +263,12 @@ func writeUpdateProgress(ui *UpdateInfo) error {
 var updateNextCmd = cli.Command{
 	Name:  "next",
 	Usage: "execute the next step in the update process",
+	Flags: []cli.Flag{
+		cli.BoolFlag{
+			Name:  "no-test",
+			Usage: "skip testing phase",
+		},
+	},
 	Action: func(c *cli.Context) error {
 		ui, err := readUpdateProgress()
 		if err != nil {
@@ -340,7 +346,7 @@ var updateNextCmd = cli.Command{
 			return err
 		}
 
-		err = checkPackage(dir)
+		err = checkPackage(dir, c.Bool("no-test"))
 		if err != nil {
 			return err
 		}
@@ -502,7 +508,7 @@ func updatePackage(dir string, changes map[string]string) error {
 	return nil
 }
 
-func checkPackage(dir string) error {
+func checkPackage(dir string, notest bool) error {
 	dupecmd := exec.Command("gx", "deps", "dupes")
 	dupecmd.Dir = dir
 	out, err := dupecmd.Output()
@@ -522,13 +528,17 @@ func checkPackage(dir string) error {
 		return err
 	}
 
-	fmt.Println("> Running 'gx test'")
-	gxtest := exec.Command("gx", "test", "./...")
-	gxtest.Dir = dir
-	gxtest.Stdout = os.Stdout
-	gxtest.Stderr = os.Stderr
-	if err := gxtest.Run(); err != nil {
-		return fmt.Errorf("error running tests: %s", err)
+	if notest {
+		fmt.Println("> Skipping gx tests")
+	} else {
+		fmt.Println("> Running 'gx test'")
+		gxtest := exec.Command("gx", "test", "./...")
+		gxtest.Dir = dir
+		gxtest.Stdout = os.Stdout
+		gxtest.Stderr = os.Stderr
+		if err := gxtest.Run(); err != nil {
+			return fmt.Errorf("error running tests: %s", err)
+		}
 	}
 
 	return nil
