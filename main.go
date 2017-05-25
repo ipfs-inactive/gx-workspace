@@ -49,11 +49,8 @@ func main() {
 	cwd = lcwd
 
 	app.Commands = []cli.Command{
-		PullCommand,
 		BubbleListCommand,
 		UpdateCommand,
-		// TestCommand,
-		ExecCommand,
 	}
 
 	if err := app.Run(os.Args); err != nil {
@@ -136,7 +133,6 @@ var UpdateCommand = cli.Command{
 	Subcommands: []cli.Command{
 		updateStartCmd,
 		updateNextCmd,
-		updateAddCmd,
 	},
 	Before: func(c *cli.Context) error {
 		gxconf, err := gx.LoadConfig()
@@ -158,46 +154,6 @@ type UpdateInfo struct {
 	Todo    []string
 	Current string
 	Skipped []string
-}
-
-var updateAddCmd = cli.Command{
-	Name:  "add",
-	Usage: "add a package to be updated",
-	Action: func(c *cli.Context) error {
-		var pkg gx.Package
-		err := gx.LoadPackageFile(&pkg, gx.PkgFileName)
-		if err != nil {
-			return err
-		}
-
-		if !c.Args().Present() {
-			return fmt.Errorf("must pass a package name")
-		}
-
-		ui, err := readUpdateProgress()
-		if err != nil {
-			return err
-		}
-
-		hash, err := pm.ResolveDepName(c.Args().First())
-		if err != nil {
-			return err
-		}
-
-		ipath, err := gx.InstallPath(pkg.Language, "", true)
-		if err != nil {
-			return err
-		}
-
-		opkg, err := pm.InstallPackage(hash, ipath)
-		if err != nil {
-			return err
-		}
-
-		ui.Changes[opkg.Name] = hash
-		fmt.Printf("Will update %s to %s (%s)\n", opkg.Name, hash, opkg.Version)
-		return writeUpdateProgress(ui)
-	},
 }
 
 var updateStartCmd = cli.Command{
@@ -730,108 +686,6 @@ func gitPull(dir string) error {
 	}
 
 	return nil
-}
-
-var PullCommand = cli.Command{
-	Name:  "pull",
-	Usage: "fetches each dependency's git repo by running go get -d",
-	Action: func(c *cli.Context) error {
-		var pkg gx.Package
-		err := gx.LoadPackageFile(&pkg, gx.PkgFileName)
-		if err != nil {
-			return err
-		}
-
-		deps, err := pm.EnumerateDependencies(&pkg)
-		if err != nil {
-			return err
-		}
-
-		Log("pulling %d package repositories...", len(deps))
-
-		for k, _ := range deps {
-			var dpkg gx.Package
-			err := gx.LoadPackage(&dpkg, pkg.Language, k)
-			if err != nil {
-				return err
-			}
-			dvcsimport := GxDvcsImport(&dpkg)
-			if dvcsimport == "" {
-				return fmt.Errorf("package %s @ %s doesn't have gx.dvcsimport set", dpkg.Name, k)
-			}
-
-			// TODO: these won't go-get
-			//       can't load package: package github.com/gogo/protobuf: no buildable Go source files
-			if strings.HasPrefix(dvcsimport, "golang.org/x/") {
-				continue
-			}
-			if dvcsimport == "github.com/gogo/protobuf" {
-				continue
-			}
-
-			// TODO: add option for passing -u, -v
-			VLog("go get -d %s", dvcsimport)
-			cmd := exec.Command("go", "get", "-d", dvcsimport)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err = cmd.Run(); err != nil {
-				return err
-			}
-		}
-
-		Log("done.")
-
-		return nil
-	},
-}
-
-var ExecCommand = cli.Command{
-	Name:  "exec",
-	Usage: "executes the given command in each dependency repo",
-	Action: func(c *cli.Context) error {
-		if len(c.Args()) == 0 {
-			return fmt.Errorf("exec requires a command to run")
-		}
-		cmd := c.Args().First()
-
-		var pkg gx.Package
-		err := gx.LoadPackageFile(&pkg, gx.PkgFileName)
-		if err != nil {
-			return err
-		}
-
-		deps, err := pm.EnumerateDependencies(&pkg)
-		if err != nil {
-			return err
-		}
-
-		Log("executing in %d package repositories...", len(deps))
-
-		for k, _ := range deps {
-			var dpkg gx.Package
-			err := gx.LoadPackage(&dpkg, pkg.Language, k)
-			if err != nil {
-				return err
-			}
-			dir, err := PkgDir(&dpkg)
-			if err != nil {
-				return err
-			}
-
-			VLog("sh -c '%s'", cmd)
-			cmd := exec.Command("sh", "-c", cmd)
-			cmd.Dir = dir
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err = cmd.Run(); err != nil {
-				return err
-			}
-		}
-
-		Log("done.")
-
-		return nil
-	},
 }
 
 func LoadDepByName(pkg gx.Package, name string) (*gx.Package, error) {
