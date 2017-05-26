@@ -241,9 +241,6 @@ var updateStartCmd = cli.Command{
 				if err != nil {
 					return fmt.Errorf("error cloning: %s", err)
 				}
-				if err = gitPull(dir); err != nil {
-					return err
-				}
 				p := filepath.Join(dir, ".gx", "lastpubver")
 				data, err := ioutil.ReadFile(p)
 				if err != nil {
@@ -555,12 +552,6 @@ func publishAndRelease(dir string) (string, string, error) {
 func updatePackage(dir string, changes map[string]string) (bool, error) {
 	fmt.Printf("working in %s\n", dir)
 
-	// make sure its up to date
-	err := gitPull(dir)
-	if err != nil {
-		return false, err
-	}
-
 	pfpath := filepath.Join(dir, gx.PkgFileName)
 	var pkg gx.Package
 	err = gx.LoadPackageFile(&pkg, pfpath)
@@ -709,30 +700,6 @@ func checkBranch(dir string) (string, error) {
 
 	clean := bytes.Trim(out, " \t\n")
 	return string(clean), nil
-}
-
-func gitPull(dir string) error {
-	br, err := checkBranch(dir)
-	if err != nil {
-		return err
-	}
-
-	if br != "master" {
-		// return fmt.Errorf("%s not on branch master, please fix manually", dir)
-		return nil
-	}
-
-	fmt.Println("> Running 'git pull origin master'")
-	cmd := exec.Command("git", "pull", "origin", "master")
-	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func LoadDepByName(pkg gx.Package, name string) (*gx.Package, error) {
