@@ -269,8 +269,7 @@ var updateStartCmd = cli.Command{
 			return err
 		}
 
-		fmt.Printf("%s\n", strings.Join(ui.Todo, "\n"))
-		fmt.Printf("> Will change %d packages.\n", len(ui.Todo))
+		fmt.Printf("> Will change %d packages: %s\n", len(ui.Todo), strings.Join(ui.Todo, ", "))
 		fmt.Printf("> Run `gx-workspace update next` to continue.\n")
 
 		return writeUpdateProgress(&ui)
@@ -550,7 +549,7 @@ func publishAndRelease(dir string) (string, string, error) {
 }
 
 func updatePackage(dir string, changes map[string]string) (bool, error) {
-	fmt.Printf("working in %s\n", dir)
+	fmt.Printf("> Working in CWD=%s\n", dir)
 
 	pfpath := filepath.Join(dir, gx.PkgFileName)
 	var pkg gx.Package
@@ -560,7 +559,7 @@ func updatePackage(dir string, changes map[string]string) (bool, error) {
 	}
 
 	fmt.Println("> Running 'gx install'")
-	gxinst := exec.Command("gx", "--verbose", "install")
+	gxinst := exec.Command("gx", "install")
 	gxinst.Dir = dir
 	gxinst.Stdout = os.Stdout
 	gxinst.Stderr = os.Stderr
@@ -598,7 +597,7 @@ func updatePackage(dir string, changes map[string]string) (bool, error) {
 		return false, nil
 	}
 
-	fmt.Printf("> Running SavePackageFile(%s)\n", pfpath)
+	fmt.Printf("> Running SavePackageFile(%s) with updated dependencies.\n", pfpath)
 	err = gx.SavePackageFile(&pkg, pfpath)
 	if err != nil {
 		return false, err
