@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	cli "github.com/codegangsta/cli"
+	homedir "github.com/mitchellh/go-homedir"
 	gx "github.com/whyrusleeping/gx/gxutil"
 	. "github.com/whyrusleeping/stump"
 )
@@ -20,6 +23,10 @@ const updateProgressFile = "gx-workspace-update.json"
 var cwd string
 
 var pm *gx.PM
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
 
 func main() {
 	app := cli.NewApp()
@@ -150,10 +157,13 @@ var UpdateCommand = cli.Command{
 }
 
 type UpdateInfo struct {
-	Changes map[string]string
-	Todo    []string
-	Current string
-	Skipped []string
+	Changes      map[string]string
+	Todo         []string
+	Current      string
+	Skipped      []string
+	GoPath       string
+	Branch       string
+	PullRequests map[string]string
 }
 
 var updateStartCmd = cli.Command{
@@ -176,6 +186,26 @@ var updateStartCmd = cli.Command{
 			return fmt.Errorf("update already in progress")
 		}
 
+		var ui UpdateInfo
+
+		updatename := randomString(6)
+		gopath, err := homedir.Expand(filepath.Join("~", ".gx", "update-"+updatename))
+		if err != nil {
+			return err
+		}
+		ui.GoPath = gopath
+		ui.Branch = "gx/update-" + updatename
+
+		err = os.Setenv("GOPATH", ui.GoPath)
+		if err != nil {
+			return err
+		}
+		err = os.Setenv("GOBIN", filepath.Join(ui.GoPath, "bin"))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("> Working in GOPATH=%s\n", ui.GoPath)
+
 		fmt.Println("> Running 'gx install'")
 		gxinst := exec.Command("gx", "install")
 		gxinst.Dir = cwd
@@ -190,7 +220,6 @@ var updateStartCmd = cli.Command{
 			return err
 		}
 
-		var ui UpdateInfo
 		ui.Todo = touched
 		ui.Changes = map[string]string{}
 
@@ -251,6 +280,16 @@ var updateStartCmd = cli.Command{
 	},
 }
 
+const letterBytes = "abcdefghijklmnopqrstuvwxyz1234567890"
+
+func randomString(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letterBytes[rand.Intn(len(letterBytes))]
+	}
+	return string(b)
+}
+
 func readUpdateProgress() (*UpdateInfo, error) {
 	fi, err := os.Open("gx-workspace-update.json")
 	if err != nil {
@@ -304,6 +343,16 @@ var updateNextCmd = cli.Command{
 		if err != nil {
 			return err
 		}
+
+		err = os.Setenv("GOPATH", ui.GoPath)
+		if err != nil {
+			return err
+		}
+		err = os.Setenv("GOBIN", filepath.Join(ui.GoPath, "bin"))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("> Working in GOPATH=%s\n", ui.GoPath)
 
 		var pkg gx.Package
 		err = gx.LoadPackageFile(&pkg, gx.PkgFileName)
@@ -564,15 +613,13 @@ func updatePackage(dir string, changes map[string]string) (bool, error) {
 		return false, err
 	}
 
-	ipath, err := gx.InstallPath(pkg.Language, "", true)
-	if err != nil {
-		return false, err
-	}
-
-	fmt.Printf("> Running InstallDeps(%s)\n", pkg.Name)
-	err = pm.InstallDeps(&pkg, ipath)
-	if err != nil {
-		return false, err
+	fmt.Println("> Running 'gx install'")
+	gxinst2 := exec.Command("gx", "install")
+	gxinst2.Dir = dir
+	gxinst2.Stdout = os.Stdout
+	gxinst2.Stderr = os.Stderr
+	if err := gxinst2.Run(); err != nil {
+		return false, fmt.Errorf("error installing gx deps: %s", err)
 	}
 
 	return true, nil
