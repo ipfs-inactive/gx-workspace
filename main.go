@@ -567,15 +567,6 @@ func updatePackage(dir string, changes map[string]string) (bool, error) {
 		return false, fmt.Errorf("error installing gx deps: %s", err)
 	}
 
-	fmt.Println("> Running 'gx-go uw'")
-	rwcmd := exec.Command("gx-go", "uw")
-	rwcmd.Dir = dir
-	rwcmd.Stdout = os.Stdout
-	rwcmd.Stderr = os.Stderr
-	if err := rwcmd.Run(); err != nil {
-		return false, fmt.Errorf("error undoing deps rewrite: %s", err)
-	}
-
 	var changed bool
 	for _, dep := range pkg.Dependencies {
 		val, ok := changes[dep.Name]
