@@ -140,6 +140,7 @@ var UpdateCommand = cli.Command{
 	Subcommands: []cli.Command{
 		updateStartCmd,
 		updateNextCmd,
+		updatePushCmd,
 	},
 	Before: func(c *cli.Context) error {
 		gxconf, err := gx.LoadConfig()
@@ -157,9 +158,11 @@ var UpdateCommand = cli.Command{
 }
 
 type UpdateInfo struct {
+	Roots        []string
 	Changes      map[string]string
 	Todo         []string
 	Current      string
+	Done         []string
 	Skipped      []string
 	GoPath       string
 	Branch       string
@@ -220,8 +223,11 @@ var updateStartCmd = cli.Command{
 			return err
 		}
 
+		ui.Roots = []string{name}
 		ui.Todo = touched
 		ui.Changes = map[string]string{}
+		ui.Done = []string{}
+		ui.Skipped = []string{}
 
 		deps, err := pm.EnumerateDependencies(&pkg)
 		if err != nil {
@@ -299,14 +305,6 @@ func readUpdateProgress() (*UpdateInfo, error) {
 		return nil, err
 	}
 
-	if ui.Changes == nil {
-		ui.Changes = make(map[string]string)
-	}
-
-	if ui.Skipped == nil {
-		ui.Skipped = []string{}
-	}
-
 	return &ui, nil
 }
 
@@ -372,7 +370,7 @@ var updateNextCmd = cli.Command{
 
 			// We don't want to publish the root package.
 			if changed && len(ui.Todo) > 0 {
-				name, hash, err := publishAndRelease(ui.Current)
+				name, hash, err := publishAndRelease(ui.Current, ui.Branch)
 				if err != nil {
 					return err
 				}
@@ -380,7 +378,29 @@ var updateNextCmd = cli.Command{
 				fmt.Printf("> Published package %s @ %s\n", ui.Current, hash)
 				fmt.Printf(">   For pinning: curl -X POST -F \"ghurl=%s\" http://mars.i.ipfs.team:9444/pin_package\n", GxDvcsImport(&current))
 			} else if changed {
-				fmt.Printf("> Leaving root package %s unreleased. Do it yourself! :)\n", ui.Current)
+				err = gitCheckout(ui.Current, ui.Branch)
+				if err != nil {
+					return err
+				}
+
+				fmt.Printf("> Running 'git add package.json' in %s\n", ui.Current)
+				add := exec.Command("git", "add", "package.json")
+				add.Dir = ui.Current
+				add.Stdout = os.Stdout
+				add.Stderr = os.Stderr
+				if err = add.Run(); err != nil {
+					return fmt.Errorf("error during git add: %s", err)
+				}
+
+				fmt.Printf("> Running 'git commit' in %s\n", ui.Current)
+				msg := "gx: update " + strings.Join(ui.Roots, ", ")
+				commitcmd := exec.Command("git", "commit", "-m", msg)
+				commitcmd.Dir = ui.Current
+				commitcmd.Stdout = os.Stdout
+				commitcmd.Stderr = os.Stderr
+				if err = commitcmd.Run(); err != nil {
+					return fmt.Errorf("error during git commit: %s", err)
+				}
 			} else {
 				fmt.Printf("> Skipping %s, it wasn't changed.\n", ui.Current)
 			}
@@ -460,6 +480,7 @@ var updateNextCmd = cli.Command{
 			if err != nil {
 				return err
 			}
+			ui.Done = append(ui.Done, ui.Todo[0])
 			fmt.Printf("> Changed %s at %s\n", ui.Todo[0], dir)
 			fmt.Printf("> Please verify before the change gets published and released.\n")
 		} else {
@@ -496,10 +517,28 @@ func gitClone(url string, dir string) error {
 	clonecmd := exec.Command("git", "clone", url, dir)
 	clonecmd.Stdout = os.Stdout
 	clonecmd.Stderr = os.Stderr
-	return clonecmd.Run()
+	if err = clonecmd.Run(); err != nil {
+		return fmt.Errorf("error during git clone: %s", err)
+	}
+
+	return nil
 }
 
-func publishAndRelease(dir string) (string, string, error) {
+func gitCheckout(dir string, branch string) error {
+	fmt.Printf("> Running 'git checkout -B %s'\n", branch)
+	cocmd := exec.Command("git", "checkout", "-B", branch)
+	cocmd.Dir = dir
+	cocmd.Stdout = os.Stdout
+	cocmd.Stderr = os.Stderr
+	if err := cocmd.Run(); err != nil {
+		return fmt.Errorf("error during git checkout: %s", err)
+	}
+
+	return nil
+}
+
+func publishAndRelease(dir string, branch string) (string, string, error) {
+	fmt.Printf("> Running 'gx-go uw'\n")
 	uwcmd := exec.Command("gx-go", "uw")
 	uwcmd.Stdout = os.Stdout
 	uwcmd.Stderr = os.Stderr
@@ -519,6 +558,12 @@ func publishAndRelease(dir string) (string, string, error) {
 		return "", "", fmt.Errorf("%s at %s does not have releaseCmd set", pkg.Name, pfpath)
 	}
 
+	err = gitCheckout(dir, branch)
+	if err != nil {
+		return "", "", fmt.Errorf("error during git checkout: %s", err)
+	}
+
+	fmt.Printf("> Running 'gx release patch'\n")
 	cmd := exec.Command("gx", "release", "patch")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -540,6 +585,7 @@ func publishAndRelease(dir string) (string, string, error) {
 		return "", "", err
 	}
 
+	fmt.Printf("> Running InstallPackage(%s)\n", nhash)
 	_, err = pm.InstallPackage(nhash, ipath)
 	if err != nil {
 		return "", "", err
@@ -553,7 +599,7 @@ func updatePackage(dir string, changes map[string]string) (bool, error) {
 
 	pfpath := filepath.Join(dir, gx.PkgFileName)
 	var pkg gx.Package
-	err = gx.LoadPackageFile(&pkg, pfpath)
+	err := gx.LoadPackageFile(&pkg, pfpath)
 	if err != nil {
 		return false, err
 	}
@@ -693,6 +739,10 @@ func checkBranch(dir string) (string, error) {
 }
 
 func LoadDepByName(pkg gx.Package, name string) (*gx.Package, error) {
+	if pkg.Name == name {
+		return &pkg, nil
+	}
+
 	deps, err := pm.EnumerateDependencies(&pkg)
 	if err != nil {
 		return nil, err
@@ -723,4 +773,88 @@ func PkgDir(pkg *gx.Package) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, GxDvcsImport(pkg)), nil
+}
+
+var updatePushCmd = cli.Command{
+	Name:  "push",
+	Usage: "push branches of updated packages, and open pull requests",
+	Action: func(c *cli.Context) error {
+		ui, err := readUpdateProgress()
+		if err != nil {
+			return err
+		}
+
+		if ui.Current != "" || len(ui.Todo) > 1 {
+			return fmt.Errorf("update not yet finished")
+		}
+
+		err = os.Setenv("GOPATH", ui.GoPath)
+		if err != nil {
+			return err
+		}
+		err = os.Setenv("GOBIN", filepath.Join(ui.GoPath, "bin"))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("> Working in GOPATH=%s\n", ui.GoPath)
+
+		var pkg gx.Package
+		err = gx.LoadPackageFile(&pkg, gx.PkgFileName)
+		if err != nil {
+			return err
+		}
+
+		for _, name := range ui.Done {
+			dep, err := LoadDepByName(pkg, name)
+			if err != nil {
+				return err
+			}
+			dir, err := PkgDir(dep)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("> Running 'git push origin %s' in %s\n", ui.Branch, dir)
+			pushcmd := exec.Command("git", "push", "origin", ui.Branch)
+			pushcmd.Dir = dir
+			pushcmd.Stdout = os.Stdout
+			pushcmd.Stderr = os.Stderr
+			if err := pushcmd.Run(); err != nil {
+				return fmt.Errorf("error running git push: %s", err)
+			}
+		}
+
+		var pr string
+		msg := "gx: update " + strings.Join(ui.Roots, ", ")
+		for i, name := range ui.Done {
+			dep, err := LoadDepByName(pkg, name)
+			if err != nil {
+				return err
+			}
+			dir, err := PkgDir(dep)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("> Running 'hub pull-request' in %s\n", dir)
+			prcmd := exec.Command("hub", "pull-request", "-m", msg+"\n\nThis PR with gx updates has been created using gx-workspace: https://github.com/ipfs/gx-workspace")
+			// prcmd := exec.Command("echo", "https://github.com/libp2p/"+name+"/pull/123")
+			prcmd.Dir = dir
+			prcmd.Stderr = os.Stderr
+			out, err := prcmd.Output()
+			if err != nil {
+				return fmt.Errorf("error running hub pull-request: %s", err)
+			}
+			pr = strings.TrimSpace(string(out))
+
+			if i == 0 {
+				msg = msg + "\n\nDepends on:\n\n"
+			}
+			msg = fmt.Sprintf("%s- %s\n", msg, pr)
+		}
+
+		fmt.Printf("> Finished: %s\n", pr)
+
+		return nil
+	},
 }
