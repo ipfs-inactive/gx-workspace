@@ -93,33 +93,31 @@ var BubbleListCommand = cli.Command{
 
 func getTodoList(root *gx.Package, names []string) ([]string, error) {
 	var touched []string
+	// XXX This cache map might hide legitimate updates where
+	//     at the first pass we might not yet know we need to update the package.
 	memo := make(map[string]bool)
 
 	var checkRec func(pkg *gx.Package) (bool, error)
 	checkRec = func(pkg *gx.Package) (bool, error) {
 		var needsUpd bool
 		pkg.ForEachDep(func(dep *gx.Dependency, pkg *gx.Package) error {
-			var processed bool
 			for _, name := range names {
 				if dep.Name == name {
-					processed = true
 					needsUpd = true
 					break
 				}
 			}
-			if !processed {
-				val, ok := memo[dep.Hash]
-				if ok {
-					needsUpd = val || needsUpd
-				} else {
-					nu, err := checkRec(pkg)
-					if err != nil {
-						return err
-					}
-
-					memo[dep.Hash] = nu
-					needsUpd = nu || needsUpd
+			val, ok := memo[dep.Hash]
+			if ok {
+				needsUpd = val || needsUpd
+			} else {
+				nu, err := checkRec(pkg)
+				if err != nil {
+					return err
 				}
+
+				memo[dep.Hash] = nu
+				needsUpd = nu || needsUpd
 			}
 			return nil
 		})
