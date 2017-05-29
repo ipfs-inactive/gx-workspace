@@ -409,8 +409,7 @@ var updateNextCmd = cli.Command{
 				fmt.Printf("> Skipping %s, it wasn't changed.\n", ui.Current)
 			}
 
-			// One less because we also added the subject package to ui.Changes.
-			done := len(ui.Changes) - 1 + len(ui.Skipped)
+			done := len(ui.Done) + len(ui.Skipped)
 			total := done + len(ui.Todo)
 			if len(ui.Todo) > 0 {
 				fmt.Printf("> Progress: %d of %d packages, next: %s\n", done, total, ui.Todo[0])
