@@ -396,6 +396,16 @@ var updateNextCmd = cli.Command{
 					return fmt.Errorf("error during git commit: %s", err)
 				}
 			} else {
+				dir, err := PkgDir(&current)
+				if err != nil {
+					return err
+				}
+				data, err := ioutil.ReadFile(filepath.Join(dir, ".gx", "lastpubver"))
+				if err != nil {
+					return err
+				}
+				ui.Changes[current.Name] = strings.Fields(string(data))[1]
+
 				fmt.Printf("> Skipping %s, it wasn't changed.\n", ui.Current)
 			}
 
