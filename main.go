@@ -79,7 +79,7 @@ var BubbleListCommand = cli.Command{
 			return fmt.Errorf("must pass a package name")
 		}
 
-		touched, err := getTodoList(&pkg, c.Args().First())
+		touched, err := getTodoList(&pkg, c.Args())
 		if err != nil {
 			return err
 		}
@@ -91,7 +91,7 @@ var BubbleListCommand = cli.Command{
 	},
 }
 
-func getTodoList(root *gx.Package, upd string) ([]string, error) {
+func getTodoList(root *gx.Package, names []string) ([]string, error) {
 	var touched []string
 	memo := make(map[string]bool)
 
@@ -99,10 +99,16 @@ func getTodoList(root *gx.Package, upd string) ([]string, error) {
 	checkRec = func(pkg *gx.Package) (bool, error) {
 		var needsUpd bool
 		pkg.ForEachDep(func(dep *gx.Dependency, pkg *gx.Package) error {
-			val, ok := memo[dep.Hash]
-			if dep.Name == upd {
-				needsUpd = true
-			} else {
+			var processed bool
+			for _, name := range names {
+				if dep.Name == name {
+					processed = true
+					needsUpd = true
+					break
+				}
+			}
+			if !processed {
+				val, ok := memo[dep.Hash]
 				if ok {
 					needsUpd = val || needsUpd
 				} else {
@@ -179,11 +185,10 @@ var updateStartCmd = cli.Command{
 			return err
 		}
 
-		if len(c.Args()) != 1 {
-			return fmt.Errorf("must pass a package name")
+		if len(c.Args()) == 0 {
+			return fmt.Errorf("must pass at least one package name")
 		}
-		name := c.Args().Get(0)
-		// hash := c.Args().Get(1)
+		names := c.Args()
 
 		if _, err := os.Stat(updateProgressFile); err == nil {
 			return fmt.Errorf("update already in progress")
@@ -218,61 +223,50 @@ var updateStartCmd = cli.Command{
 			return fmt.Errorf("error installing gx deps: %s", err)
 		}
 
-		touched, err := getTodoList(&pkg, name)
+		touched, err := getTodoList(&pkg, names)
 		if err != nil {
 			return err
 		}
 
-		ui.Roots = []string{name}
+		ui.Roots = names
 		ui.Todo = touched
 		ui.Changes = map[string]string{}
 		ui.Done = []string{}
 		ui.Skipped = []string{}
 
-		deps, err := pm.EnumerateDependencies(&pkg)
-		if err != nil {
-			return err
-		}
-		for _, v := range deps {
-			if v == name {
-				pkg, err := LoadDepByName(pkg, name)
-				if err != nil {
-					return err
-				}
-				dir, err := PkgDir(pkg)
-				if err != nil {
-					return err
-				}
-				err = gitClone(GxDvcsImport(pkg), dir)
-				if err != nil {
-					return fmt.Errorf("error cloning: %s", err)
-				}
-				p := filepath.Join(dir, ".gx", "lastpubver")
-				data, err := ioutil.ReadFile(p)
-				if err != nil {
-					return err
-				}
-				pubver := strings.Fields(string(data))
-				if len(pubver) != 2 {
-					return fmt.Errorf("error parsing hash from %s", p)
-				}
-				ui.Changes[name] = pubver[1]
-				break
+		for _, name := range ui.Roots {
+			pkg, err := LoadDepByName(pkg, name)
+			if err != nil {
+				return err
 			}
-		}
-		hash, ok := ui.Changes[name]
-		if !ok {
-			return fmt.Errorf("failed to find hash for %s", name)
-		}
+			dir, err := PkgDir(pkg)
+			if err != nil {
+				return err
+			}
+			err = gitClone(GxDvcsImport(pkg), dir)
+			if err != nil {
+				return fmt.Errorf("error cloning: %s", err)
+			}
+			p := filepath.Join(dir, ".gx", "lastpubver")
+			data, err := ioutil.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			pubver := strings.Fields(string(data))
+			if len(pubver) != 2 {
+				return fmt.Errorf("error parsing hash from %s", p)
+			}
+			ui.Changes[name] = pubver[1]
 
-		ipath, err := gx.InstallPath(pkg.Language, "", true)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("> Running InstallPackage(%s)\n", hash)
-		_, err = pm.InstallPackage(hash, ipath)
-		if err != nil {
-			return err
+			ipath, err := gx.InstallPath(pkg.Language, "", true)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("> Running InstallPackage(%s)\n", ui.Changes[name])
+			_, err = pm.InstallPackage(ui.Changes[name], ipath)
+			if err != nil {
+				return err
+			}
 		}
 
 		fmt.Printf("> Will change %d packages: %s\n", len(ui.Todo), strings.Join(ui.Todo, ", "))
