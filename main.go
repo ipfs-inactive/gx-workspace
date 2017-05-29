@@ -445,6 +445,10 @@ var updateNextCmd = cli.Command{
 			if err != nil {
 				return err
 			}
+			err = os.MkdirAll(filepath.Dir(dir), 0755)
+			if err != nil {
+				return err
+			}
 			fmt.Printf("> Running Symlink(%s, %s)\n", wd, dir)
 			err = os.Symlink(wd, dir)
 			if err != nil {
