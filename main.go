@@ -145,6 +145,7 @@ var UpdateCommand = cli.Command{
 		updateStartCmd,
 		updateNextCmd,
 		updatePushCmd,
+		updateUndoCmd,
 	},
 	Before: func(c *cli.Context) error {
 		gxconf, err := gx.LoadConfig()
@@ -176,6 +177,11 @@ type UpdateInfo struct {
 var updateStartCmd = cli.Command{
 	Name:  "start",
 	Usage: "begin an update of packages throughout the tree",
+	Flags: []cli.Flag{
+		cli.BoolFlag{
+			Name: "temp-gopath",
+		},
+	},
 	Action: func(c *cli.Context) error {
 		var pkg gx.Package
 		err := gx.LoadPackageFile(&pkg, gx.PkgFileName)
@@ -194,10 +200,17 @@ var updateStartCmd = cli.Command{
 
 		var ui UpdateInfo
 
+		var gopath string
+
 		updatename := randomString(6)
-		gopath, err := homedir.Expand(filepath.Join("~", ".gx", "update-"+updatename))
-		if err != nil {
-			return err
+		if c.Bool("temp-gopath") {
+			randgp, err := homedir.Expand(filepath.Join("~", ".gx", "update-"+updatename))
+			if err != nil {
+				return err
+			}
+			gopath = randgp
+		} else {
+			gopath = os.Getenv("GOPATH")
 		}
 		ui.GoPath = gopath
 		ui.Branch = "gx/update-" + updatename
@@ -241,10 +254,17 @@ var updateStartCmd = cli.Command{
 			if err != nil {
 				return err
 			}
-			err = gitClone(GxDvcsImport(pkg), dir)
-			if err != nil {
-				return fmt.Errorf("error cloning: %s", err)
+
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
+				if err := gitClone(GxDvcsImport(pkg), dir); err != nil {
+					return fmt.Errorf("error cloning: %s", err)
+				}
+			} else {
+				if err := gitPull(dir); err != nil {
+					return fmt.Errorf("error pulling latest: %s", err)
+				}
 			}
+
 			p := filepath.Join(dir, ".gx", "lastpubver")
 			data, err := ioutil.ReadFile(p)
 			if err != nil {
@@ -472,6 +492,10 @@ var updateNextCmd = cli.Command{
 				if err != nil {
 					return fmt.Errorf("error cloning: %s", err)
 				}
+			} else {
+				if err := gitPull(dir); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -505,6 +529,36 @@ var updateNextCmd = cli.Command{
 	},
 }
 
+var updateUndoCmd = cli.Command{
+	Name:  "undo",
+	Usage: "put the last 'done' item back on the todo list",
+	Action: func(c *cli.Context) error {
+		ui, err := readUpdateProgress()
+		if err != nil {
+			return err
+		}
+
+		if len(ui.Done) == 0 {
+			fmt.Println("nothing to undo")
+			return nil
+		}
+
+		ui.Todo = append([]string{ui.Done[len(ui.Done)-1]}, ui.Todo...)
+		ui.Done = ui.Done[:len(ui.Done)-1]
+		ui.Current = ""
+
+		if err := writeUpdateProgress(ui); err != nil {
+			return err
+		}
+
+		return nil
+	},
+}
+
+func hasChangesSincePublish(dir string) (bool, error) {
+	return false, nil
+}
+
 func gitClone(url string, dir string) error {
 	pdir := filepath.Dir(dir)
 	err := os.MkdirAll(pdir, 0775)
@@ -522,7 +576,20 @@ func gitClone(url string, dir string) error {
 	clonecmd := exec.Command("git", "clone", url, dir)
 	clonecmd.Stdout = os.Stdout
 	clonecmd.Stderr = os.Stderr
-	if err = clonecmd.Run(); err != nil {
+	if err := clonecmd.Run(); err != nil {
+		return fmt.Errorf("error during git clone: %s", err)
+	}
+
+	return nil
+}
+
+func gitPull(dir string) error {
+	fmt.Printf("> Running 'git pull origin master' in %s\n", dir)
+	pullcmd := exec.Command("git", "pull", "origin", "master")
+	pullcmd.Dir = dir
+	pullcmd.Stdout = os.Stdout
+	pullcmd.Stderr = os.Stderr
+	if err := pullcmd.Run(); err != nil {
 		return fmt.Errorf("error during git clone: %s", err)
 	}
 
@@ -618,6 +685,11 @@ func updatePackage(dir string, changes map[string]string) (bool, error) {
 		return false, fmt.Errorf("error installing gx deps: %s", err)
 	}
 
+	ipath, err := gx.InstallPath(pkg.Language, "", true)
+	if err != nil {
+		return false, err
+	}
+
 	var changed bool
 	for _, dep := range pkg.Dependencies {
 		val, ok := changes[dep.Name]
@@ -625,8 +697,8 @@ func updatePackage(dir string, changes map[string]string) (bool, error) {
 			continue
 		}
 
-		var chpkg gx.Package
-		if err := gx.LoadPackage(&chpkg, pkg.Language, val); err != nil {
+		chpkg, err := pm.InstallPackage(val, ipath)
+		if err != nil {
 			return false, err
 		}
 
