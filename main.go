@@ -780,6 +780,30 @@ func PkgDir(pkg *gx.Package) (string, error) {
 	return filepath.Join(dir, GxDvcsImport(pkg)), nil
 }
 
+func gitRemotes(dir string) ([]string, error) {
+	buf := new(bytes.Buffer)
+	remotescmd := exec.Command("git", "remote")
+	remotescmd.Dir = dir
+	remotescmd.Stdout = buf
+	remotescmd.Stderr = os.Stderr
+
+	if err := remotescmd.Run(); err != nil {
+		return nil, fmt.Errorf("error running git remote: %s", err)
+	}
+
+	lines := strings.Split(buf.String(), "\n")
+	return lines[:len(lines)-1], nil
+}
+
+func gitPush(remote string, branch string, dir string) error {
+	fmt.Printf("> Running 'git push %s %s' in %s\n", remote, branch, dir)
+	pushcmd := exec.Command("git", "push", remote, branch)
+	pushcmd.Dir = dir
+	pushcmd.Stdout = os.Stdout
+	pushcmd.Stderr = os.Stderr
+	return pushcmd.Run()
+}
+
 var updatePushCmd = cli.Command{
 	Name:  "push",
 	Usage: "push branches of updated packages, and open pull requests",
@@ -819,13 +843,45 @@ var updatePushCmd = cli.Command{
 				return err
 			}
 
-			fmt.Printf("> Running 'git push origin %s' in %s\n", ui.Branch, dir)
-			pushcmd := exec.Command("git", "push", "origin", ui.Branch)
-			pushcmd.Dir = dir
-			pushcmd.Stdout = os.Stdout
-			pushcmd.Stderr = os.Stderr
-			if err := pushcmd.Run(); err != nil {
-				return fmt.Errorf("error running git push: %s", err)
+			if err := gitPush("origin", ui.Branch, dir); err != nil {
+				remotes, err := gitRemotes(dir)
+				if err != nil {
+					return err
+				}
+
+				if len(remotes) > 2 {
+					return fmt.Errorf("error running git push: too many remotes")
+				}
+
+				if len(remotes) == 1 {
+					fmt.Printf("> Running 'hub fork' in %s\n", dir)
+					forkcmd := exec.Command("hub", "fork")
+					forkcmd.Dir = dir
+					forkcmd.Stdout = os.Stdout
+					forkcmd.Stderr = os.Stderr
+
+					if err := forkcmd.Run(); err != nil {
+						return fmt.Errorf("error running hub fork: %s", err)
+					}
+
+					remotes, err = gitRemotes(dir)
+					if err != nil {
+						return err
+					}
+				}
+
+				if len(remotes) != 2 {
+					return fmt.Errorf("error running git push: unexpected number of remotes %d != 2", len(remotes))
+				}
+
+				remote := remotes[0]
+				if remote == "origin" {
+					remote = remotes[1]
+				}
+
+				if err := gitPush(remote, ui.Branch, dir); err != nil {
+					return fmt.Errorf("error running git push: %s", err)
+				}
 			}
 		}
 
