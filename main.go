@@ -797,7 +797,7 @@ func gitRemotes(dir string) ([]string, error) {
 
 func gitPush(remote string, branch string, dir string) error {
 	fmt.Printf("> Running 'git push %s %s' in %s\n", remote, branch, dir)
-	pushcmd := exec.Command("git", "push", remote, branch)
+	pushcmd := exec.Command("git", "push", "--set-upstream", remote, branch)
 	pushcmd.Dir = dir
 	pushcmd.Stdout = os.Stdout
 	pushcmd.Stderr = os.Stderr
