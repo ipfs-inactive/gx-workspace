@@ -689,7 +689,7 @@ func checkPackage(dir string, notest bool) error {
 		if err := gogetd.Run(); err != nil {
 			return fmt.Errorf("error installing go deps: %s", err)
 		}
-		fmt.Println("> Running 'gx test'")
+		fmt.Println("> Running 'gx test ./...'")
 		gxtest := exec.Command("gx", "test", "./...")
 		gxtest.Dir = dir
 		gxtest.Stdout = os.Stdout
