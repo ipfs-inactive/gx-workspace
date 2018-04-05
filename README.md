@@ -15,48 +15,25 @@
 
 ### Usage
 
-We're working directly in the respective package, no administrative overhead
-
-```sh
-> cd $GOPATH/src/github.com/ipfs/go-ipfs/
+To update package `foo` in package `bar`, where `foo` is a nested dependency (a
+dependency of `bar` and also a dependency of `bar`s other dependencies).
+Change directory to the package `bar`, and run:
+```
+gx-workspace update start foo
 ```
 
-Let's clone/pull all the respective `dvcsimport` repos into GOPATH.
-Most of them will already be there and it's our "workspace".
+This will ensure all necessary dependencies are installed, and generate a
+`gx-workspace-update.json` file that specifies the set of tasks to be done to
+complete the update. It should also have the correct hash of the package you
+are trying to update in the 'Changes' map.
 
-```sh
-> gx-workspace pull
-```
+To progress with the updates, run `gx-workspace update next` and follow the prompts.
+For each package you will have to run the `next` command twice. Once to do the
+update and run the tests, then once to publish and commit those changes (this
+allows manual inspection of the packages if desired).
 
-Now bubble up the hashes through the tree, this leaves dirty `package.json` and `.gx/`.
-This will abort if *any* repo is dirty, overridable by -f
-
-```sh
-> gx-workspace update go-cid go-libp2p-interface-pnet
-```
-
-Run tests in all packages.
-
-```sh
-> gx-workspace exec make test
-```
-
-Now do the git dance, but only for repos which got touched
-
-```sh
-> gx-workspace pr feat/gx-update-123456
-# which is the equivalent of:
-> gx-workspace exec --only-deps --changed 'git checkout -b $branch && git commit -am "gx release $VERSION" && git push origin $BRANCH && hub pull-request -m "Update go-cid go-libp2p-interface-pnet"'
-```
-
-There's going to be some packages that are outside of this dependency tree,
-but still want these updates. They can copy over the updates:
-
-```sh
-> cd $GOPATH/src/github.com/ipfs/ipns-pub
-> gx-workspace pull
-> gx-workspace update-from go-ipfs
-```
+This process continues until you reach the root package, `bar` in our example.
+At which point the update is complete.
 
 ## Contributing
 
