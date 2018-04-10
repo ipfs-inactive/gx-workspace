@@ -343,6 +343,10 @@ var updateNextCmd = cli.Command{
 			Name:  "no-test",
 			Usage: "skip testing phase",
 		},
+		cli.BoolFlag{
+			Name:  "warn-test",
+			Usage: "only print a warning when a test fails",
+		},
 	},
 	Action: func(c *cli.Context) error {
 		ui, err := readUpdateProgress()
@@ -505,7 +509,7 @@ var updateNextCmd = cli.Command{
 		}
 
 		if changed {
-			err = checkPackage(dir, c.Bool("no-test"))
+			err = checkPackage(dir, c.Bool("no-test"), c.Bool("warn-test"))
 			if err != nil {
 				return err
 			}
@@ -729,7 +733,7 @@ func updatePackage(dir string, changes map[string]string) (bool, error) {
 	return true, nil
 }
 
-func checkPackage(dir string, notest bool) error {
+func checkPackage(dir string, notest bool, softTestErr bool) error {
 	fmt.Println("> Running 'gx deps dupes'")
 	dupecmd := exec.Command("gx", "deps", "dupes")
 	dupecmd.Dir = dir
@@ -767,7 +771,11 @@ func checkPackage(dir string, notest bool) error {
 		gxtest.Stdout = os.Stdout
 		gxtest.Stderr = os.Stderr
 		if err := gxtest.Run(); err != nil {
-			return fmt.Errorf("error running tests: %s", err)
+			if !softTestErr {
+				return fmt.Errorf("error running tests: %s", err)
+			} else {
+				fmt.Printf("!! Error running tests: %s\n", err)
+			}
 		}
 	}
 
