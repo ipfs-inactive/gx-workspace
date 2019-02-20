@@ -100,7 +100,7 @@ func getTodoList(root *gx.Package, names []string) ([]string, error) {
 	var checkRec func(pkg *gx.Package) (bool, error)
 	checkRec = func(pkg *gx.Package) (bool, error) {
 		var needsUpd bool
-		pkg.ForEachDep(func(dep *gx.Dependency, pkg *gx.Package) error {
+		err := pkg.ForEachDep(func(dep *gx.Dependency, pkg *gx.Package) error {
 			for _, name := range names {
 				if dep.Name == name {
 					needsUpd = true
@@ -121,6 +121,9 @@ func getTodoList(root *gx.Package, names []string) ([]string, error) {
 			}
 			return nil
 		})
+		if err != nil {
+			return false, err
+		}
 		if needsUpd {
 			touched = append(touched, pkg.Name)
 		}
@@ -146,6 +149,7 @@ var UpdateCommand = cli.Command{
 		updateNextCmd,
 		updatePushCmd,
 		updateUndoCmd,
+		updateRunCmd,
 	},
 	Before: func(c *cli.Context) error {
 		gxconf, err := gx.LoadConfig()
@@ -174,12 +178,46 @@ type UpdateInfo struct {
 	PullRequests map[string]string
 }
 
+func EnumerateAllChildPackages(pkg *gx.Package) ([]string, error) {
+	out := make(map[string]struct{})
+	if err := enumerateAllChildPackages(pkg, out); err != nil {
+		return nil, err
+	}
+
+	var aggr []string
+	for k := range out {
+		aggr = append(aggr, k)
+	}
+
+	return aggr, nil
+}
+
+func enumerateAllChildPackages(pkg *gx.Package, pkgs map[string]struct{}) error {
+	return pkg.ForEachDep(func(dep *gx.Dependency, pkg *gx.Package) error {
+		// TODO: subtle bug here where we could miss some packages if they appear as
+		// dependencies in one version of a package, but not in another version with the
+		// same name. probably can worry about this later with a 'normalize' command
+		if _, ok := pkgs[dep.Name]; ok {
+			return nil
+		}
+		pkgs[dep.Name] = struct{}{}
+
+		return enumerateAllChildPackages(pkg, pkgs)
+	})
+}
+
 var updateStartCmd = cli.Command{
 	Name:  "start",
 	Usage: "begin an update of packages throughout the tree",
 	Flags: []cli.Flag{
 		cli.BoolFlag{
 			Name: "temp-gopath",
+		},
+		cli.BoolFlag{
+			Name: "all",
+		},
+		cli.BoolFlag{
+			Name: "skip-failed-clones",
 		},
 	},
 	Action: func(c *cli.Context) error {
@@ -189,10 +227,18 @@ var updateStartCmd = cli.Command{
 			return err
 		}
 
-		if len(c.Args()) == 0 {
+		if len(c.Args()) == 0 && !c.Bool("all") {
 			return fmt.Errorf("must pass at least one package name")
 		}
 		names := c.Args()
+
+		if c.Bool("all") {
+			allpkgs, err := EnumerateAllChildPackages(&pkg)
+			if err != nil {
+				return err
+			}
+			names = allpkgs
+		}
 
 		if _, err := os.Stat(updateProgressFile); err == nil {
 			return fmt.Errorf("update already in progress")
@@ -234,64 +280,84 @@ var updateStartCmd = cli.Command{
 			return fmt.Errorf("error installing gx deps: %s", err)
 		}
 
-		touched, err := getTodoList(&pkg, names)
-		if err != nil {
-			return err
-		}
-
-		ui.Roots = names
-		ui.Todo = touched
 		ui.Changes = map[string]string{}
 		ui.Done = []string{}
 		ui.Skipped = []string{}
 
-		for _, name := range ui.Roots {
-			pkg, err := LoadDepByName(pkg, name)
+		for _, name := range names {
+			skip, err := syncRepo(c, pkg, &ui, name)
 			if err != nil {
 				return err
 			}
-			dir, err := PkgDir(pkg)
-			if err != nil {
-				return err
-			}
-
-			if _, err := os.Stat(dir); os.IsNotExist(err) {
-				if err := gitClone(GxDvcsImport(pkg), dir); err != nil {
-					return fmt.Errorf("error cloning: %s", err)
-				}
-			} else {
-				if err := gitPull(dir); err != nil {
-					return fmt.Errorf("error pulling latest: %s", err)
-				}
-			}
-
-			p := filepath.Join(dir, ".gx", "lastpubver")
-			data, err := ioutil.ReadFile(p)
-			if err != nil {
-				return err
-			}
-			pubver := strings.Fields(string(data))
-			if len(pubver) != 2 {
-				return fmt.Errorf("error parsing hash from %s", p)
-			}
-			ui.Changes[name] = pubver[1]
-
-			ipath, err := gx.InstallPath(pkg.Language, "", true)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("> Running InstallPackage(%s)\n", ui.Changes[name])
-			_, err = pm.InstallPackage(ui.Changes[name], ipath)
-			if err != nil {
-				return err
+			if !skip {
+				ui.Roots = append(ui.Roots, name)
 			}
 		}
+
+		touched, err := getTodoList(&pkg, ui.Roots)
+		if err != nil {
+			return fmt.Errorf("getTodoList failed: %s", err)
+		}
+		ui.Todo = touched
 
 		fmt.Printf("> Will change %d packages: %s\n", len(ui.Todo), strings.Join(ui.Todo, ", "))
 		fmt.Printf("> Run `gx-workspace update next` to continue.\n")
 
 		return writeUpdateProgress(&ui)
 	},
+}
+
+func syncRepo(c *cli.Context, parentpkg gx.Package, ui *UpdateInfo, name string) (bool, error) {
+	pkg, err := LoadDepByName(parentpkg, name)
+	if err != nil {
+		return false, err
+	}
+	dir, err := PkgDir(pkg)
+	if err != nil {
+		return false, err
+	}
+
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := gitClone(GxDvcsImport(pkg), dir); err != nil {
+			finalErr := fmt.Errorf("error cloning: %s", err)
+			if c.Bool("skip-failed-clones") {
+				fmt.Printf("WARNING: %n", finalErr)
+				return true, nil
+			} else {
+				return false, finalErr
+			}
+		}
+	} else {
+		if err := gitPull(dir); err != nil {
+			return false, fmt.Errorf("error pulling latest: %s", err)
+		}
+	}
+
+	p := filepath.Join(dir, ".gx", "lastpubver")
+	data, err := ioutil.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("WARNING: skipping non-gx package %q\n", name)
+			return true, nil
+		}
+		return false, err
+	}
+	pubver := strings.Fields(string(data))
+	if len(pubver) != 2 {
+		return false, fmt.Errorf("error parsing hash from %s", p)
+	}
+	ui.Changes[name] = pubver[1]
+
+	ipath, err := gx.InstallPath(pkg.Language, "", true)
+	if err != nil {
+		return false, err
+	}
+	fmt.Printf("> Running InstallPackage(%s)\n", ui.Changes[name])
+	_, err = pm.InstallPackage(ui.Changes[name], ipath)
+	if err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyz1234567890"
@@ -344,189 +410,198 @@ var updateNextCmd = cli.Command{
 			Usage: "skip testing phase",
 		},
 	},
-	Action: func(c *cli.Context) error {
-		ui, err := readUpdateProgress()
+	Action: updateNext,
+}
+
+func updateStepTwo(ui *UpdateInfo) error {
+	var current gx.Package
+	err := gx.LoadPackageFile(&current, filepath.Join(ui.Current, gx.PkgFileName))
+	if err != nil {
+		return err
+	}
+
+	changed := true
+	for _, name := range ui.Skipped {
+		if name == current.Name {
+			changed = false
+		}
+	}
+
+	// We don't want to publish the root package.
+	if changed && len(ui.Todo) > 0 {
+		name, hash, err := publishAndRelease(ui.Current, ui.Branch)
+		if err != nil {
+			return err
+		}
+		ui.Changes[name] = hash
+		fmt.Printf("> Published package %s @ %s\n", ui.Current, hash)
+		fmt.Printf(">   For pinning: curl -X POST -F \"ghurl=%s\" http://mars.i.ipfs.team:9444/pin_package\n", GxDvcsImport(&current))
+	} else if changed {
+		err = gitCheckout(ui.Current, ui.Branch)
 		if err != nil {
 			return err
 		}
 
-		err = os.Setenv("GOPATH", ui.GoPath)
+		fmt.Printf("> Running 'git add package.json' in %s\n", ui.Current)
+		add := exec.Command("git", "add", "package.json")
+		add.Dir = ui.Current
+		add.Stdout = os.Stdout
+		add.Stderr = os.Stderr
+		if err = add.Run(); err != nil {
+			return fmt.Errorf("error during git add: %s", err)
+		}
+
+		fmt.Printf("> Running 'git commit' in %s\n", ui.Current)
+		msg := "gx: update " + strings.Join(ui.Roots, ", ")
+		commitcmd := exec.Command("git", "commit", "-m", msg)
+		commitcmd.Dir = ui.Current
+		commitcmd.Stdout = os.Stdout
+		commitcmd.Stderr = os.Stderr
+		if err = commitcmd.Run(); err != nil {
+			return fmt.Errorf("error during git commit: %s", err)
+		}
+	} else {
+		dir, err := PkgDir(&current)
 		if err != nil {
 			return err
 		}
-		err = os.Setenv("GOBIN", filepath.Join(ui.GoPath, "bin"))
+		data, err := ioutil.ReadFile(filepath.Join(dir, ".gx", "lastpubver"))
 		if err != nil {
 			return err
 		}
-		fmt.Printf("> Working in GOPATH=%s\n", ui.GoPath)
+		ui.Changes[current.Name] = strings.Fields(string(data))[1]
 
-		var pkg gx.Package
-		err = gx.LoadPackageFile(&pkg, gx.PkgFileName)
-		if err != nil {
-			return err
-		}
+		fmt.Printf("> Skipping %s, it wasn't changed.\n", ui.Current)
+	}
 
-		if ui.Current != "" {
-			var current gx.Package
-			err = gx.LoadPackageFile(&current, filepath.Join(ui.Current, gx.PkgFileName))
-			if err != nil {
-				return err
-			}
-
-			changed := true
-			for _, name := range ui.Skipped {
-				if name == current.Name {
-					changed = false
-				}
-			}
-
-			// We don't want to publish the root package.
-			if changed && len(ui.Todo) > 0 {
-				name, hash, err := publishAndRelease(ui.Current, ui.Branch)
-				if err != nil {
-					return err
-				}
-				ui.Changes[name] = hash
-				fmt.Printf("> Published package %s @ %s\n", ui.Current, hash)
-				fmt.Printf(">   For pinning: curl -X POST -F \"ghurl=%s\" http://mars.i.ipfs.team:9444/pin_package\n", GxDvcsImport(&current))
-			} else if changed {
-				err = gitCheckout(ui.Current, ui.Branch)
-				if err != nil {
-					return err
-				}
-
-				fmt.Printf("> Running 'git add package.json' in %s\n", ui.Current)
-				add := exec.Command("git", "add", "package.json")
-				add.Dir = ui.Current
-				add.Stdout = os.Stdout
-				add.Stderr = os.Stderr
-				if err = add.Run(); err != nil {
-					return fmt.Errorf("error during git add: %s", err)
-				}
-
-				fmt.Printf("> Running 'git commit' in %s\n", ui.Current)
-				msg := "gx: update " + strings.Join(ui.Roots, ", ")
-				commitcmd := exec.Command("git", "commit", "-m", msg)
-				commitcmd.Dir = ui.Current
-				commitcmd.Stdout = os.Stdout
-				commitcmd.Stderr = os.Stderr
-				if err = commitcmd.Run(); err != nil {
-					return fmt.Errorf("error during git commit: %s", err)
-				}
-			} else {
-				dir, err := PkgDir(&current)
-				if err != nil {
-					return err
-				}
-				data, err := ioutil.ReadFile(filepath.Join(dir, ".gx", "lastpubver"))
-				if err != nil {
-					return err
-				}
-				ui.Changes[current.Name] = strings.Fields(string(data))[1]
-
-				fmt.Printf("> Skipping %s, it wasn't changed.\n", ui.Current)
-			}
-
-			done := len(ui.Done) + len(ui.Skipped)
-			total := done + len(ui.Todo)
-			if len(ui.Todo) > 0 {
-				fmt.Printf("> Progress: %d of %d packages, next: %s\n", done, total, ui.Todo[0])
-				fmt.Printf("> Run `gx-workspace update next` to continue.\n")
-			} else {
-				fmt.Printf("> Progress: %d of %d packages, finished.\n", done, total)
-				fmt.Printf("> You can now safely remove gx-workspace-update.json.\n")
-			}
-
-			ui.Current = ""
-			err = writeUpdateProgress(ui)
-			if err != nil {
-				return err
-			}
-			return nil
-		}
-
-		if len(ui.Todo) == 0 {
-			fmt.Printf("> We're done here.\n")
-			fmt.Printf("> You can now safely remove gx-workspace-update.json.\n")
-			return nil
-		}
-
-		fmt.Printf("updating package %s\n", ui.Todo[0])
-
-		var dir string
-		if ui.Todo[0] == pkg.Name {
-			wd, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-			dir, err = PkgDir(&pkg)
-			if err != nil {
-				return err
-			}
-			err = os.MkdirAll(filepath.Dir(dir), 0755)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("> Running Symlink(%s, %s)\n", wd, dir)
-			err = os.Symlink(wd, dir)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-			}
-		} else {
-			dep, err := LoadDepByName(pkg, ui.Todo[0])
-			if err != nil {
-				return err
-			}
-
-			dir, err = PkgDir(dep)
-			if err != nil {
-				return err
-			}
-
-			if _, err := os.Stat(dir); err != nil {
-				if !os.IsNotExist(err) {
-					return err
-				}
-
-				err := gitClone(GxDvcsImport(dep), dir)
-				if err != nil {
-					return fmt.Errorf("error cloning: %s", err)
-				}
-			} else {
-				if err := gitPull(dir); err != nil {
-					return err
-				}
-			}
-		}
-
-		changed, err := updatePackage(dir, ui.Changes)
-		if err != nil {
-			return err
-		}
-
-		if changed {
-			err = checkPackage(dir, c.Bool("no-test"))
-			if err != nil {
-				return err
-			}
-			ui.Done = append(ui.Done, ui.Todo[0])
-			fmt.Printf("> Changed %s at %s\n", ui.Todo[0], dir)
-			fmt.Printf("> Please verify before the change gets published and released.\n")
-		} else {
-			ui.Skipped = append(ui.Skipped, ui.Todo[0])
-			fmt.Printf("> Going to skip %s, it doesn't need to be changed.\n", ui.Todo[0])
-		}
+	done := len(ui.Done) + len(ui.Skipped)
+	total := done + len(ui.Todo)
+	if len(ui.Todo) > 0 {
+		fmt.Printf("> Progress: %d of %d packages, next: %s\n", done, total, ui.Todo[0])
 		fmt.Printf("> Run `gx-workspace update next` to continue.\n")
+	} else {
+		fmt.Printf("> Progress: %d of %d packages, finished.\n", done, total)
+		fmt.Printf("> You can now safely remove gx-workspace-update.json.\n")
+	}
 
-		ui.Todo = ui.Todo[1:]
-		ui.Current = dir
-		err = writeUpdateProgress(ui)
+	ui.Current = ""
+	return nil
+}
+
+func updateStepOne(ui *UpdateInfo, notest bool) error {
+	if len(ui.Todo) == 0 {
+		fmt.Printf("> We're done here.\n")
+		fmt.Printf("> You can now safely remove gx-workspace-update.json.\n")
+		return nil
+	}
+
+	fmt.Printf("updating package %s\n", ui.Todo[0])
+	var pkg gx.Package
+	if err := gx.LoadPackageFile(&pkg, gx.PkgFileName); err != nil {
+		return err
+	}
+
+	var dir string
+	if ui.Todo[0] == pkg.Name {
+		wd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		dir, err = PkgDir(&pkg)
+		if err != nil {
+			return err
+		}
+		err = os.MkdirAll(filepath.Dir(dir), 0755)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("> Running Symlink(%s, %s)\n", wd, dir)
+		err = os.Symlink(wd, dir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	} else {
+		dep, err := LoadDepByName(pkg, ui.Todo[0])
 		if err != nil {
 			return err
 		}
 
-		return nil
-	},
+		dir, err = PkgDir(dep)
+		if err != nil {
+			return err
+		}
+
+		if _, err := os.Stat(dir); err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+
+			err := gitClone(GxDvcsImport(dep), dir)
+			if err != nil {
+				return fmt.Errorf("error cloning: %s", err)
+			}
+		} else {
+			if err := gitPull(dir); err != nil {
+				return err
+			}
+		}
+	}
+
+	changed, err := updatePackage(dir, ui.Changes)
+	if err != nil {
+		return err
+	}
+
+	if changed {
+		err = checkPackage(dir, notest)
+		if err != nil {
+			return err
+		}
+		ui.Done = append(ui.Done, ui.Todo[0])
+		fmt.Printf("> Changed %s at %s\n", ui.Todo[0], dir)
+		fmt.Printf("> Please verify before the change gets published and released.\n")
+	} else {
+		ui.Skipped = append(ui.Skipped, ui.Todo[0])
+		fmt.Printf("> Going to skip %s, it doesn't need to be changed.\n", ui.Todo[0])
+	}
+	fmt.Printf("> Run `gx-workspace update next` to continue.\n")
+
+	ui.Todo = ui.Todo[1:]
+	ui.Current = dir
+	return nil
+}
+
+func updateNext(c *cli.Context) error {
+	ui, err := readUpdateProgress()
+	if err != nil {
+		return err
+	}
+
+	err = os.Setenv("GOPATH", ui.GoPath)
+	if err != nil {
+		return err
+	}
+	err = os.Setenv("GOBIN", filepath.Join(ui.GoPath, "bin"))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("> Working in GOPATH=%s\n", ui.GoPath)
+
+	if ui.Current == "" {
+		if err := updateStepOne(ui, c.Bool("no-test")); err != nil {
+			return err
+		}
+	} else {
+		if err := updateStepTwo(ui); err != nil {
+			return err
+		}
+	}
+
+	if err := writeUpdateProgress(ui); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 var updateUndoCmd = cli.Command{
@@ -874,6 +949,27 @@ func gitPush(remote string, branch string, dir string) error {
 	pushcmd.Stdout = os.Stdout
 	pushcmd.Stderr = os.Stderr
 	return pushcmd.Run()
+}
+
+var updateRunCmd = cli.Command{
+	Name:  "run",
+	Usage: "run update, looping with user input",
+	Flags: []cli.Flag{
+		cli.BoolFlag{
+			Name: "no-prompt",
+		},
+	},
+	Action: func(c *cli.Context) error {
+		for {
+			if err := updateNext(c); err != nil {
+				return err
+			}
+			if !c.Bool("no-prompt") {
+				fmt.Println("Press enter to continue...")
+				fmt.Scanln()
+			}
+		}
+	},
 }
 
 var updatePushCmd = cli.Command{
