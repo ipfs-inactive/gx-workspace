@@ -100,7 +100,7 @@ func getTodoList(root *gx.Package, names []string) ([]string, error) {
 	var checkRec func(pkg *gx.Package) (bool, error)
 	checkRec = func(pkg *gx.Package) (bool, error) {
 		var needsUpd bool
-		pkg.ForEachDep(func(dep *gx.Dependency, pkg *gx.Package) error {
+		err := pkg.ForEachDep(func(dep *gx.Dependency, pkg *gx.Package) error {
 			for _, name := range names {
 				if dep.Name == name {
 					needsUpd = true
@@ -121,6 +121,9 @@ func getTodoList(root *gx.Package, names []string) ([]string, error) {
 			}
 			return nil
 		})
+		if err != nil {
+			return false, err
+		}
 		if needsUpd {
 			touched = append(touched, pkg.Name)
 		}
@@ -213,6 +216,9 @@ var updateStartCmd = cli.Command{
 		cli.BoolFlag{
 			Name: "all",
 		},
+		cli.BoolFlag{
+			Name: "skip-failed-clones",
+		},
 	},
 	Action: func(c *cli.Context) error {
 		var pkg gx.Package
@@ -274,64 +280,84 @@ var updateStartCmd = cli.Command{
 			return fmt.Errorf("error installing gx deps: %s", err)
 		}
 
-		touched, err := getTodoList(&pkg, names)
-		if err != nil {
-			return err
-		}
-
-		ui.Roots = names
-		ui.Todo = touched
 		ui.Changes = map[string]string{}
 		ui.Done = []string{}
 		ui.Skipped = []string{}
 
-		for _, name := range ui.Roots {
-			pkg, err := LoadDepByName(pkg, name)
+		for _, name := range names {
+			skip, err := syncRepo(c, pkg, &ui, name)
 			if err != nil {
 				return err
 			}
-			dir, err := PkgDir(pkg)
-			if err != nil {
-				return err
-			}
-
-			if _, err := os.Stat(dir); os.IsNotExist(err) {
-				if err := gitClone(GxDvcsImport(pkg), dir); err != nil {
-					return fmt.Errorf("error cloning: %s", err)
-				}
-			} else {
-				if err := gitPull(dir); err != nil {
-					return fmt.Errorf("error pulling latest: %s", err)
-				}
-			}
-
-			p := filepath.Join(dir, ".gx", "lastpubver")
-			data, err := ioutil.ReadFile(p)
-			if err != nil {
-				return err
-			}
-			pubver := strings.Fields(string(data))
-			if len(pubver) != 2 {
-				return fmt.Errorf("error parsing hash from %s", p)
-			}
-			ui.Changes[name] = pubver[1]
-
-			ipath, err := gx.InstallPath(pkg.Language, "", true)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("> Running InstallPackage(%s)\n", ui.Changes[name])
-			_, err = pm.InstallPackage(ui.Changes[name], ipath)
-			if err != nil {
-				return err
+			if !skip {
+				ui.Roots = append(ui.Roots, name)
 			}
 		}
+
+		touched, err := getTodoList(&pkg, ui.Roots)
+		if err != nil {
+			return fmt.Errorf("getTodoList failed: %s", err)
+		}
+		ui.Todo = touched
 
 		fmt.Printf("> Will change %d packages: %s\n", len(ui.Todo), strings.Join(ui.Todo, ", "))
 		fmt.Printf("> Run `gx-workspace update next` to continue.\n")
 
 		return writeUpdateProgress(&ui)
 	},
+}
+
+func syncRepo(c *cli.Context, parentpkg gx.Package, ui *UpdateInfo, name string) (bool, error) {
+	pkg, err := LoadDepByName(parentpkg, name)
+	if err != nil {
+		return false, err
+	}
+	dir, err := PkgDir(pkg)
+	if err != nil {
+		return false, err
+	}
+
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := gitClone(GxDvcsImport(pkg), dir); err != nil {
+			finalErr := fmt.Errorf("error cloning: %s", err)
+			if c.Bool("skip-failed-clones") {
+				fmt.Printf("WARNING: %n", finalErr)
+				return true, nil
+			} else {
+				return false, finalErr
+			}
+		}
+	} else {
+		if err := gitPull(dir); err != nil {
+			return false, fmt.Errorf("error pulling latest: %s", err)
+		}
+	}
+
+	p := filepath.Join(dir, ".gx", "lastpubver")
+	data, err := ioutil.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("WARNING: skipping non-gx package %q\n", name)
+			return true, nil
+		}
+		return false, err
+	}
+	pubver := strings.Fields(string(data))
+	if len(pubver) != 2 {
+		return false, fmt.Errorf("error parsing hash from %s", p)
+	}
+	ui.Changes[name] = pubver[1]
+
+	ipath, err := gx.InstallPath(pkg.Language, "", true)
+	if err != nil {
+		return false, err
+	}
+	fmt.Printf("> Running InstallPackage(%s)\n", ui.Changes[name])
+	_, err = pm.InstallPackage(ui.Changes[name], ipath)
+	if err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyz1234567890"
