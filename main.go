@@ -965,7 +965,7 @@ var updateRunCmd = cli.Command{
 				return err
 			}
 			if !c.Bool("no-prompt") {
-				fmt.Println("Press any key to continue...")
+				fmt.Println("Press enter to continue...")
 				fmt.Scanln()
 			}
 		}
